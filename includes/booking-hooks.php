@@ -5,6 +5,7 @@ if (!defined('ABSPATH')) {
 
 /*
  * NEW BOOKING / PENDING
+ * 
  */
 add_action('wpbc_track_new_booking', 'bsm_send_pending_booking_sms', 10, 1);
 
