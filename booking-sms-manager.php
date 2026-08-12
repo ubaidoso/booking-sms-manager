@@ -16,11 +16,13 @@ define('BSM_PATH', plugin_dir_path(__FILE__));
 define('BSM_URL', plugin_dir_url(__FILE__));
 define('BSM_DB_VERSION', '1.0.0');
 
-require_once BSM_PATH . 'includes/booking-data.php';
-require_once BSM_PATH . 'includes/sms-sender.php';
-require_once BSM_PATH . 'includes/sms-messages.php';
-require_once BSM_PATH . 'includes/booking-hooks.php';
 require_once BSM_PATH . 'includes/admin.php';
+require_once BSM_PATH . 'includes/booking-data.php';
+require_once BSM_PATH . 'includes/booking-hooks.php';
+require_once BSM_PATH . 'includes/sms-messages.php';
+require_once BSM_PATH . 'includes/sms-sender.php';
+require_once BSM_PATH . 'includes/updater.php';
+
 
 register_activation_hook(__FILE__, 'bsm_activate');
 
