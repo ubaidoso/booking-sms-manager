@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Booking SMS Manager
  * Description: Sends customer SMS notifications for WP Booking Calendar events through Twilio and provides an admin SMS Outbox.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Mr.Ubaid Tahir
  */
 
