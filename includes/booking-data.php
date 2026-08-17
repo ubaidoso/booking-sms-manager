@@ -95,24 +95,63 @@ function bsm_get_booking_details($booking_id) {
     $booking_dates = array();
 
     foreach ((array) $date_rows as $row) {
-        if (empty($row['booking_date'])) {
-            continue;
-        }
 
-        $timestamp = strtotime($row['booking_date']);
-
-        if ($timestamp) {
-            $booking_dates[] = wp_date('F j, Y', $timestamp);
-        }
+    if (empty($row['booking_date'])) {
+        continue;
     }
 
+    $raw_date = trim($row['booking_date']);
+
+    /*
+    |--------------------------------------------------------------------------
+    | WP Booking Calendar stores the booking date.
+    | Keep the actual calendar date and avoid timezone shifting.
+    |--------------------------------------------------------------------------
+    */
+
+    $date_only = substr($raw_date, 0, 10);
+
+    if (
+        preg_match(
+            '/^\d{4}-\d{2}-\d{2}$/',
+            $date_only
+        )
+    ) {
+
+        $booking_dates[] = wp_date(
+            'F j, Y',
+            strtotime($date_only . ' 12:00:00')
+        );
+    }
+}
+
     $booking_dates = array_values(array_unique($booking_dates));
+    if (
+        empty($booking_dates) &&
+        !empty($booking['sort_date'])
+    ) {
 
-    if (empty($booking_dates) && !empty($booking['sort_date'])) {
-        $timestamp = strtotime($booking['sort_date']);
+        $raw_date = trim(
+            $booking['sort_date']
+        );
 
-        if ($timestamp) {
-            $booking_dates[] = wp_date('F j, Y', $timestamp);
+        $date_only = substr(
+            $raw_date,
+            0,
+            10
+        );
+
+        if (
+            preg_match(
+                '/^\d{4}-\d{2}-\d{2}$/',
+                $date_only
+            )
+        ) {
+
+            $booking_dates[] = wp_date(
+                'F j, Y',
+                strtotime($date_only . ' 12:00:00')
+            );
         }
     }
 
