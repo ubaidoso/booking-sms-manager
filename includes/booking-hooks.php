@@ -1371,3 +1371,577 @@ function bsm_process_pre_pickup_for_booking(
         );
     }
 }
+
+/*
+|--------------------------------------------------------------------------
+| MARK BOOKING AS COMPLETE
+|--------------------------------------------------------------------------
+|
+| Completion is managed by Booking SMS Manager.
+|
+| WP Booking Calendar remains internally Approved.
+| We store completion in our SMS log/event system.
+|
+|--------------------------------------------------------------------------
+*/
+
+
+/*
+|--------------------------------------------------------------------------
+| CHECK IF BOOKING IS APPROVED
+|--------------------------------------------------------------------------
+*/
+
+function bsm_is_booking_approved($booking_id)
+{
+    global $wpdb;
+
+    $booking_id = absint($booking_id);
+
+    if (!$booking_id) {
+        return false;
+    }
+
+    $dates_table = $wpdb->prefix . 'bookingdates';
+
+    $rows = $wpdb->get_results(
+        $wpdb->prepare(
+            "SELECT approved
+             FROM {$dates_table}
+             WHERE booking_id = %d",
+            $booking_id
+        ),
+        ARRAY_A
+    );
+
+    if (empty($rows)) {
+        return false;
+    }
+
+    foreach ($rows as $row) {
+
+        if (
+            !isset($row['approved']) ||
+            (int) $row['approved'] !== 1
+        ) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function bsm_has_booking_ended($booking_id)
+{
+    global $wpdb;
+
+    $booking_id = absint($booking_id);
+
+    if (!$booking_id) {
+        return false;
+    }
+
+    $dates_table = $wpdb->prefix . 'bookingdates';
+
+    $last_booking_date = $wpdb->get_var(
+        $wpdb->prepare(
+            "SELECT MAX(booking_date)
+             FROM {$dates_table}
+             WHERE booking_id = %d",
+            $booking_id
+        )
+    );
+
+    if (empty($last_booking_date)) {
+        return false;
+    }
+
+    /*
+     * WPBC booking_date can contain a date/time.
+     * We only need the calendar date.
+     */
+    $last_date = substr(
+        trim($last_booking_date),
+        0,
+        10
+    );
+
+    if (
+        !preg_match(
+            '/^\d{4}-\d{2}-\d{2}$/',
+            $last_date
+        )
+    ) {
+        return false;
+    }
+
+    /*
+     * Use WordPress site's timezone.
+     */
+    $today = current_time('Y-m-d');
+
+    /*
+     * Last booking date must be BEFORE today.
+     *
+     * Example:
+     * Last date = 2026-09-23
+     * Today     = 2026-09-23
+     * Result    = false
+     *
+     * Last date = 2026-09-22
+     * Today     = 2026-09-23
+     * Result    = true
+     */
+    return $last_date < $today;
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| CHECK IF BOOKING IS COMPLETED
+|--------------------------------------------------------------------------
+|
+| We use the SMS log table rather than creating one WordPress option
+| for every booking.
+|
+| A successful "completed" SMS means the booking was completed.
+|
+|--------------------------------------------------------------------------
+*/
+
+function bsm_is_booking_completed($booking_id)
+{
+    global $wpdb;
+
+    $booking_id = absint($booking_id);
+
+    if (!$booking_id) {
+        return false;
+    }
+
+    $table = $wpdb->prefix . 'booking_sms_logs';
+
+    $completed = $wpdb->get_var(
+        $wpdb->prepare(
+            "SELECT id
+             FROM {$table}
+             WHERE booking_id = %d
+             AND event_type = %s
+             AND status = %s
+             ORDER BY id DESC
+             LIMIT 1",
+            $booking_id,
+            'completed',
+            'success'
+        )
+    );
+
+    return !empty($completed);
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| AJAX - MARK BOOKING AS COMPLETE
+|--------------------------------------------------------------------------
+*/
+
+add_action(
+    'wp_ajax_bsm_mark_booking_complete',
+    'bsm_ajax_mark_booking_complete'
+);
+
+
+function bsm_ajax_mark_booking_complete()
+{
+    /*
+     * Permission.
+     */
+    if (!current_user_can('manage_options')) {
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'You do not have permission to complete bookings.',
+            ),
+            403
+        );
+    }
+
+
+    /*
+     * Nonce.
+     */
+    check_ajax_referer(
+        'bsm_mark_booking_complete',
+        'nonce'
+    );
+
+
+    /*
+     * Booking ID.
+     */
+    $booking_id = isset($_POST['booking_id'])
+        ? absint($_POST['booking_id'])
+        : 0;
+
+
+    if (!$booking_id) {
+
+        wp_send_json_error(
+            array(
+                'message' => 'Invalid booking ID.',
+            ),
+            400
+        );
+    }
+
+
+    /*
+     * Must still be approved.
+     */
+    if (!bsm_is_booking_approved($booking_id)) {
+
+        error_log(
+            'BSM COMPLETE BLOCKED | Booking #' .
+            $booking_id .
+            ' is not approved.'
+        );
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'Only approved bookings can be marked as complete.',
+            ),
+            400
+        );
+    }
+	
+	
+		/*
+		 * Last Date Must be passed.
+		 */
+		if (!bsm_has_booking_ended($booking_id)) {
+
+		error_log(
+			'BSM COMPLETE BLOCKED | Booking #' .
+			$booking_id .
+			' | Last booking date has not passed.'
+		);
+
+		wp_send_json_error(
+			array(
+				'message' =>
+					'This booking cannot be marked as complete until the last booking date has passed.',
+			),
+			400
+		);
+	}
+
+
+    /*
+     * Already completed?
+     */
+    if (bsm_is_booking_completed($booking_id)) {
+
+        wp_send_json_success(
+            array(
+                'message' =>
+                    'This booking has already been completed.',
+                'booking_id' =>
+                    $booking_id,
+                'completed' =>
+                    true,
+                'already_completed' =>
+                    true,
+            )
+        );
+    }
+
+
+    /*
+     * Lock the booking.
+     *
+     * Prevents double-click / two simultaneous requests.
+     */
+    $lock_key =
+        'bsm_complete_lock_' .
+        $booking_id;
+
+
+    if (get_transient($lock_key)) {
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'This booking is already being processed.',
+            ),
+            409
+        );
+    }
+
+
+    set_transient(
+        $lock_key,
+        1,
+        60
+    );
+
+
+    /*
+     * Get booking details.
+     */
+    $details =
+        bsm_get_booking_details(
+            $booking_id
+        );
+
+
+    if (!$details) {
+
+        delete_transient(
+            $lock_key
+        );
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'Booking details could not be found.',
+            ),
+            404
+        );
+    }
+
+
+    /*
+     * Customer phone.
+     */
+    $phone = isset($details['phone'])
+        ? trim($details['phone'])
+        : '';
+
+
+    if ($phone === '') {
+
+        delete_transient(
+            $lock_key
+        );
+
+        error_log(
+            'BSM COMPLETE FAILED | Booking #' .
+            $booking_id .
+            ' | Customer phone missing.'
+        );
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'Customer phone number is missing.',
+            ),
+            400
+        );
+    }
+
+
+    /*
+     * Build completion SMS.
+     */
+    $message =
+        bsm_completed_booking_message(
+            $details
+        );
+
+
+    /*
+     * Send SMS.
+     *
+     * The SMS sender creates the log entry.
+     */
+    $sent =
+        bsm_send_twilio_sms(
+            $phone,
+            $message,
+            $booking_id,
+            'completed'
+        );
+
+
+    if (!$sent) {
+
+        delete_transient(
+            $lock_key
+        );
+
+        error_log(
+            'BSM COMPLETE SMS FAILED | Booking #' .
+            $booking_id
+        );
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'The completion SMS could not be sent.',
+            ),
+            500
+        );
+    }
+
+
+    /*
+     * Confirm that the successful completion event
+     * was actually recorded.
+     */
+    if (!bsm_is_booking_completed($booking_id)) {
+
+        delete_transient(
+            $lock_key
+        );
+
+        error_log(
+            'BSM COMPLETE FAILED | Booking #' .
+            $booking_id .
+            ' | SMS sent but completion log was not found.'
+        );
+
+        wp_send_json_error(
+            array(
+                'message' =>
+                    'SMS was sent, but the completion status could not be saved.',
+            ),
+            500
+        );
+    }
+
+
+    /*
+     * Unlock.
+     */
+    delete_transient(
+        $lock_key
+    );
+
+
+    error_log(
+        'BSM BOOKING COMPLETED | Booking #' .
+        $booking_id .
+        ' | Completion SMS sent.'
+    );
+
+
+    /*
+     * Success.
+     */
+    wp_send_json_success(
+        array(
+            'message' =>
+                'Booking marked as complete and SMS sent successfully.',
+
+            'booking_id' =>
+                $booking_id,
+
+            'completed' =>
+                true,
+        )
+    );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| AJAX - GET COMPLETION STATUS
+|--------------------------------------------------------------------------
+|
+| Allows the Booking Calendar listing JavaScript to determine which
+| approved bookings are already completed after page reload.
+|
+|--------------------------------------------------------------------------
+*/
+
+add_action(
+    'wp_ajax_bsm_get_completion_status',
+    'bsm_ajax_get_completion_status'
+);
+
+
+function bsm_ajax_get_completion_status()
+{
+    if (!current_user_can('manage_options')) {
+
+        wp_send_json_error(
+            array(
+                'message' => 'Unauthorized.',
+            ),
+            403
+        );
+    }
+
+
+    check_ajax_referer(
+        'bsm_mark_booking_complete',
+        'nonce'
+    );
+
+
+    $booking_ids =
+        isset($_POST['booking_ids']) &&
+        is_array($_POST['booking_ids'])
+            ? array_map(
+                'absint',
+                wp_unslash(
+                    $_POST['booking_ids']
+                )
+            )
+            : array();
+
+
+    $booking_ids =
+        array_values(
+            array_filter(
+                array_unique(
+                    $booking_ids
+                )
+            )
+        );
+
+
+    if (empty($booking_ids)) {
+
+        wp_send_json_success(
+            array(
+                'completed' => array(),
+            )
+        );
+    }
+
+
+    $completed = array();
+	$ended = array();
+
+	foreach ($booking_ids as $booking_id) {
+
+		if (
+			bsm_is_booking_completed(
+				$booking_id
+			)
+		) {
+			$completed[] = $booking_id;
+		}
+
+		if (
+			bsm_has_booking_ended(
+				$booking_id
+			)
+		) {
+			$ended[] = $booking_id;
+		}
+	}
+
+
+	wp_send_json_success(
+		array(
+			'completed' => $completed,
+			'ended'     => $ended,
+		)
+	);
+}
+

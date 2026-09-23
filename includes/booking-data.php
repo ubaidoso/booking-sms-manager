@@ -78,8 +78,20 @@ function bsm_get_booking_details($booking_id) {
 
     $customer_name = trim($first_name . ' ' . $second_name);
 
-    $email = bsm_get_form_value($form, 'email1');
-    $phone = bsm_get_form_value($form, 'phone1');
+   $email = bsm_get_form_value($form, 'email1');
+
+$phone = bsm_get_form_value($form, 'phone1');
+
+/*
+ * WP Booking Calendar phone field is currently stored
+ * using the field name "phone".
+ *
+ * Keep phone1 as a fallback in case older bookings
+ * used that field name.
+ */
+if ($phone === '') {
+    $phone = bsm_get_form_value($form, 'phone');
+}
 
     $date_rows = $wpdb->get_results(
         $wpdb->prepare(
